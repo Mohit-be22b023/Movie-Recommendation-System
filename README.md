@@ -1,381 +1,983 @@
 # Movie-Recommendation-System
 
-🎞️ CineLatent — Deep Autoencoder Movie Recommender (MovieLens 1M)
+Absolutely — what you have is already very detailed, but it reads more like a technical project report than a GitHub README. For GitHub, I’d make it more reader-friendly and explanatory: first explain what CineLatent does and why, then progressively show the architecture, methodology, results, and how to run it.
 
-A complete, end-to-end collaborative-filtering system: a deep autoencoder learns 128-dimensional latent representations of 3,706 films from 1,000,209 ratings, cosine similarity in that space produces recommendations, the TMDB API adds posters and metadata, and a Streamlit app serves the result.
+Here’s a polished README structure that keeps your technical depth but makes the project easier to understand:
 
-Every number in this README was printed by the notebook. Nothing is estimated, rounded up, or carried over from a paper.
+🎞️ CineLatent — Deep Autoencoder Movie Recommender
 
-	
-Test RMSE (held-out ratings)	0.8604 vs 0.9321 for the best baseline
-Best Top-10 scorer	Precision@10 0.0927, Recall@10 0.1137, Hit-Rate@10 0.5179, NDCG@10 0.1271
-Popularity baseline (same protocol)	Precision@10 0.0733, Recall@10 0.0861, Hit-Rate@10 0.4369, NDCG@10 0.0986
-Training	30 epochs, best at epoch 20, ~3 minutes on a single CPU core
-Table of contents
+A deep-learning collaborative filtering system that learns what movies are similar from user rating behaviour.
 
-Project overview · Business problem · Dataset · Technologies · System architecture · Data preprocessing · Collaborative filtering · Deep autoencoder · Embedding generation · Recommendation algorithm · Evaluation · TMDB API integration · Streamlit application · Colab / Jupyter setup · Local setup · API configuration · How to run · Deploying to Streamlit Cloud · Results · Limitations · Future improvements
+CineLatent uses the MovieLens 1M dataset to learn 128-dimensional latent representations for 3,706 movies. Movies that receive similar ratings from similar users are placed close together in the learned latent space. Recommendations are then generated using cosine similarity between these movie embeddings.
 
-Project overview
+The project also integrates the TMDB API to enrich recommendations with posters and movie metadata, and provides a Streamlit web application for interacting with the recommender.
 
-CineLatent answers one question — "I liked this film, what else would I like?" — using nothing but rating behaviour. No plot summaries, no cast lists, no genre labels enter the model. Two films end up close together because the same people rated them the same way, which is what collaborative filtering means.
+The key idea: If people who liked The Godfather also tended to like another movie, the model learns that relationship — without ever being told about the movie's plot, actors, or genres.
 
-The project is split cleanly in two:
+📊 Results at a Glance
+Metric	CineLatent
+Test RMSE	0.8604
+Test MAE	0.6720
+Precision@10	0.0927
+Recall@10	0.1137
+Hit-Rate@10	0.5179
+NDCG@10	0.1271
+Movies embedded	3,706
+Embedding dimension	128
+Training	30 epochs
+Best epoch	20
+Training time	~3 min, single CPU core
 
-movie_recommender.ipynb — the ML workflow: load, clean, explore, split, train, evaluate, extract embeddings, save artifacts. This is where the work happens, and it runs top to bottom in Jupyter or Google Colab.
-app.py — the interface. It loads saved artifacts and never trains anything, so it starts in about a second.
+The model achieves a 7.7% lower RMSE than the strongest rating-prediction baseline (0.9321).
 
-The notebook writes src/recommender.py, src/tmdb_api.py and app.py to disk with %%writefile, so the notebook and the app can never drift apart.
+For Top-10 recommendations, the embedding-based recommender also beats the popularity baseline on all four reported ranking metrics.
 
-Business problem
+🧠 What Is CineLatent?
 
-A catalogue with thousands of titles and a user who will scroll through maybe twenty of them. Editorial curation does not scale, and the obvious fallback — show whatever is most popular — is a genuinely strong baseline that a recommender has to beat, not merely claim to replace. This project measures that comparison explicitly rather than assuming the win.
+Imagine thousands of users rating thousands of movies.
 
-The commercial framing: recommendations drive a large share of streaming watch-time, and the marginal cost of a better ranking function is close to zero once the pipeline exists.
+Most users have only rated a small fraction of the catalogue, so the resulting movie × user matrix is extremely sparse.
 
-Dataset
+CineLatent asks:
 
-MovieLens 1M (GroupLens Research), three ::-delimited, Latin-1 encoded files:
+Can we compress each movie's entire rating pattern into a small vector that captures its relationships with other movies?
 
-file	rows	schema
-ratings.dat	1,000,209	UserID :: MovieID :: Rating :: Timestamp
-movies.dat	3,883	MovieID :: Title :: Genres
-users.dat	6,040	UserID :: Gender :: Age :: Occupation :: Zip-code
+The answer is yes.
 
-Measured during validation (section 04 of the notebook):
+Each movie starts as a vector containing the ratings it received from 6,040 users:
 
-6,040 users, 3,706 films that received at least one rating
-177 films in movies.dat that nobody rated — kept in the catalogue, but they cannot receive an embedding
-zero missing values, zero duplicate rows, zero duplicate (user, movie) pairs
-ratings are whole stars 1–5; every user has at least 20 ratings
-matrix sparsity 95.53% (density 4.47%)
-ratings span 2000-04-25 to 2003-02-28
+Movie A
+[5, 4, 0, 0, 3, 0, 5, 4, ...]
 
-Nothing was dropped. All 1,000,209 ratings reach the model.
 
-Technologies
+That vector is passed through a deep autoencoder:
 
-Python 3.10+ · pandas · NumPy · SciPy (sparse matrices) · scikit-learn (PCA, splitting utilities) · TensorFlow / Keras 3 · Matplotlib · seaborn · requests · python-dotenv · Streamlit · TMDB REST API
+6,040 ratings
+      ↓
+   Dense 512
+      ↓
+   Dense 256
+      ↓
+   Dense 128   ← movie embedding
+      ↓
+   Dense 256
+      ↓
+   Dense 512
+      ↓
+6,040 reconstructed ratings
 
-Dependencies are split deliberately: requirements.txt holds only what app.py needs at runtime (streamlit, numpy, pandas, requests, python-dotenv), and requirements-dev.txt adds the training stack. The app loads saved arrays and never imports TensorFlow, so a deployment does not need a 600 MB wheel.
 
-System architecture
-MovieLens 1M (.dat)
-      │
-      ▼  cleaning + validation report
-   EDA (9 figures)
-      │
-      ▼  movies × users sparse matrix   (missing ≠ zero)
- per-user 80/10/10 split                (leakage asserted, not assumed)
-      │
-      ▼  deep autoencoder, masked MSE loss
- latent layer ──────────► movie embeddings (3706 × 128)
-      │                          │
-      ▼                          ▼
- reconstructed ratings     cosine similarity + top-50 neighbourhood
- (RMSE / MAE)              (Top-N recommendations)
-                                 │
-                                 ▼
-                        TMDB API (posters, overviews, ratings)
-                                 │
-                                 ▼
-                          Streamlit application
-Data preprocessing
+The 128-dimensional bottleneck becomes the movie's learned representation.
 
-Two decisions carry the entire model, and both are the places where recommender projects usually go quietly wrong.
+Movies with similar rating behaviour tend to end up close together in this space.
 
-1. Missing ratings are not zeros. The matrix is stored sparse, where an absent cell means unobserved. Ratings are scaled as r / 5, so observed values live in {0.2, 0.4, 0.6, 0.8, 1.0} and 0.0 is reserved to mean "no rating". The common alternative, (r - 1) / 4, maps a one-star rating to 0.0 and makes it indistinguishable from an empty cell.
+CineLatent then uses cosine similarity to find the nearest movies.
 
-2. The loss is masked. Only observed cells contribute:
+🎯 The Problem
 
-L = Σ mᵢᵤ (rᵢᵤ − r̂ᵢᵤ)² / Σ mᵢᵤ ,   mᵢᵤ = 1 when the rating exists
+A catalogue can contain thousands of movies, while a user may only consider a few dozen.
 
-Without the mask, 95.53% of the targets would be zeros and the network would learn to predict that everybody dislikes everything.
+A simple recommendation system can always show the most popular movies, but popularity is a surprisingly strong baseline.
 
-Split. Each user's ratings are shuffled with a fixed seed and cut 80/10/10, so every user appears in all three sets: 802,553 train / 100,273 validation / 97,383 test. The notebook asserts that no (user, movie) pair appears in two splits and that every validation and test cell is empty in the matrix the network reads. Validation targets are held-out cells scored against the training input, so val_loss measures generalisation with no leakage.
+Therefore, CineLatent evaluates two separate questions:
 
-Collaborative filtering
+1. Can the model predict ratings?
 
-The orientation of the matrix is a modelling decision, not a formatting one:
+Given a movie/user pair that was hidden during training, how close is the predicted rating to the actual rating?
 
-orientation	one sample is	the bottleneck yields
-user-based (U-AutoRec)	a user's ratings over all films	one vector per user
-item-based (I-AutoRec) ← used here	a film's ratings from all users	one vector per film
+This is measured using:
 
-Because the product recommends films similar to a film, the item-based orientation gives exactly the representation needed straight from the bottleneck, with no reinterpretation step. It is also the better-conditioned problem here: 3,706 films averaging 270 ratings each is a denser signal per sample than 6,040 users averaging 166.
+RMSE
+MAE
+2. Can the model recommend the right movies?
 
-Deep autoencoder
-input   6,040 user ratings for one film   (0 = unobserved)
-  │  Dense 512  ReLU     + L2(1e-5), Dropout 0.2
-  │  Dense 256  ReLU     + L2(1e-5), Dropout 0.2
-  │  Dense 128  linear   ◄── the movie embedding
-  │  Dense 256  ReLU     + L2(1e-5), Dropout 0.2
-  │  Dense 512  ReLU     + L2(1e-5)
-output  6,040 reconstructed ratings       (sigmoid, ×5 → stars)
+Given a user's previous ratings, can the system place movies they later rated highly inside the Top-10?
 
-6,520,344 parameters. Adam (lr 1e-3, halved on plateau), batch size 64, early stopping on validation masked RMSE with patience 10 and best-weight restore. Trained 30 epochs, best at epoch 20, validation masked RMSE 0.8695 stars.
+This is measured using:
 
-Design rationale: the bottleneck is linear because ReLU would clamp every negative coordinate to zero and squash the range of cosine similarity; dropout sits on the hidden layers rather than the input because dropping ratings from an already 95%-empty vector adds noise without regularising; the output is a sigmoid because ratings are bounded.
+Precision@10
+Recall@10
+Hit-Rate@10
+NDCG@10
 
-Embedding generation
+These are deliberately evaluated separately because good rating prediction does not automatically mean good ranking.
 
-The encoder is the input-to-bottleneck half of the trained network. Running the rating matrix through it yields (3706, 128) float32 — one row per film, in the same order as the catalogue.
+🗂️ Dataset
 
-The notebook asserts, rather than assumes: one embedding per film, the MovieID ↔ index mapping is invertible, encoding a single film in isolation reproduces its row of the batch output, no non-finite values, and zero films with a degenerate all-zero vector.
+CineLatent uses MovieLens 1M, provided by GroupLens Research.
 
-What is not claimed: there is no per-user latent vector in this model. Obtaining one would require training the transposed network — the case where "movie embeddings" would have to be derived from decoder weights, and where the term is most often used loosely. Reconstructed ratings are used only for what they are: predicted ratings, evaluated with RMSE/MAE.
+The original dataset contains:
 
-Recommendation algorithm
-python
-from src.recommender import MovieRecommender
+File	Rows	Contents
+ratings.dat	1,000,209	User ratings
+movies.dat	3,883	Movie titles and genres
+users.dat	6,040	User demographics
 
-rec = MovieRecommender.load("models")
-rec.recommend_movies("Godfather, The (1972)", top_n=10)
-resolve the title (exact → prefix → substring, ties broken by popularity)
-look up its embedding
-cosine similarity against all 3,706 embeddings
-exclude the query film and films below min_support training ratings
-return the Top-N with title, genres, similarity and rating counts
+After validation:
 
-Handled explicitly, and demonstrated in section 15 of the notebook: unknown titles (with close-match suggestions), misspellings, ambiguous partial titles ("Toy Story" → two candidates), top_n that is zero, negative or non-integer, top_n larger than the candidate pool, films with almost no ratings, and a min_support so high that nothing qualifies.
+6,040 users
+3,706 rated movies
+177 unrated catalogue movies
+1,000,209 ratings
+95.53% matrix sparsity
+4.47% matrix density
+Ratings from 1–5 stars
+Every user has at least 20 ratings
 
-recommend_from_profile(["Alien (1979)", "Blade Runner (1982)"]) blends several films using the top-50 neighbourhood scorer — the same algorithm the evaluation section measures.
+The 177 movies with no ratings remain in the catalogue, but cannot receive learned embeddings because the model has no collaborative signal for them.
 
-A sample of actual output:
+🔬 How the Model Works
+1. Build the Movie × User Matrix
 
-Because you watched  Godfather, The (1972)
-   1. Godfather: Part II, The (1974)              cos 0.991
-   2. Close Encounters of the Third Kind (1977)   cos 0.941
-   3. Apocalypse Now (1979)                       cos 0.932
-   4. Unforgiven (1992)                           cos 0.931
-   5. Dog Day Afternoon (1975)                    cos 0.914
+Instead of representing each user by their movie ratings, CineLatent represents each movie by the ratings it received from every user.
 
-Because you watched  Toy Story (1995)
-   1. Toy Story 2 (1999)                          cos 0.981
-   2. Aladdin (1992)                              cos 0.958
-   3. Bug's Life, A (1998)                        cos 0.944
-   4. Lion King, The (1994)                       cos 0.907
-Evaluation
+That gives:
 
-Two different questions, two different measurements. Conflating them is how recommender results get oversold.
+                    Users
+              U1  U2  U3  U4  ... U6040
+             ───────────────────────────
+Movie 1       5   0   4   0   ...   3
+Movie 2       0   5   4   0   ...   4
+Movie 3       2   0   0   5   ...   0
+...
+Movie 3706    4   0   5   0   ...   2
 
-(a) Rating prediction — 97,383 held-out test ratings
-model	RMSE	MAE
-Deep autoencoder	0.8604	0.6720
-Movie + user bias	0.9321	0.7314
-Movie mean	0.9800	0.7830
-User mean	1.0334	0.8268
-Global mean	1.1168	0.9332
 
-7.7% lower RMSE than the strongest baseline. A model that cannot beat "predict this film's average" has learned nothing, so the baselines are the point.
+The resulting matrix has:
 
-(b) Top-10 ranking — 5,862 users with at least one relevant test film
+3,706 movies × 6,040 users
 
-Relevance = a test rating of 4 or 5. Films already in the user's training set are excluded from the candidate pool.
 
-scorer	Precision@10	Recall@10	Hit-Rate@10	NDCG@10
-Embedding item-item, top-50 neighbours	0.0927	0.1137	0.5179	0.1271
-Popularity baseline	0.0733	0.0861	0.4369	0.0986
+This orientation is intentional.
+
+Because the final product is a movie-to-movie recommender, each training sample is already a movie and the autoencoder's bottleneck directly becomes that movie's embedding.
+
+2. Missing Ratings Are Not Zero
+
+This is one of the most important details in the implementation.
+
+A missing rating does not mean the user disliked the movie.
+
+It means:
+
+The user has never rated it.
+
+Therefore:
+
+0 = unobserved
+0.2 = 1 star
+0.4 = 2 stars
+0.6 = 3 stars
+0.8 = 4 stars
+1.0 = 5 stars
+
+
+Ratings are scaled using:
+
+rating / 5
+
+
+rather than:
+
+(rating - 1) / 4
+
+
+because the latter would turn a genuine 1-star rating into 0.0, making it indistinguishable from a missing rating.
+
+🎭 Masked Loss
+
+Because 95.53% of the matrix is empty, a normal MSE loss would be problematic.
+
+If missing values were treated as ordinary zero targets, the model could achieve a deceptively low loss simply by learning:
+
+"Most users haven't rated most movies, so predict zero everywhere."
+
+CineLatent therefore uses a masked MSE:
+
+                    Σ mᵢᵤ (rᵢᵤ − r̂ᵢᵤ)²
+Loss =              ───────────────────────
+                         Σ mᵢᵤ
+
+
+where:
+
+mᵢᵤ = 1  if a rating exists
+mᵢᵤ = 0  otherwise
+
+
+Only observed ratings contribute to the loss.
+
+This allows the model to learn actual rating behaviour rather than learning the sparsity pattern.
+
+✂️ Train / Validation / Test Split
+
+Ratings are split per user using a fixed seed:
+
+80% training
+10% validation
+10% test
+
+
+Resulting in:
+
+Train:      802,553 ratings
+Validation: 100,273 ratings
+Test:        97,383 ratings
+
+
+Every user appears in all three sets.
+
+The notebook explicitly verifies that:
+
+no (user, movie) pair appears in multiple splits
+validation and test ratings are absent from the model's input matrix
+held-out ratings are evaluated only after training
+the split is reproducible with SEED = 42
+
+This prevents train/test leakage.
+
+🏗️ Deep Autoencoder Architecture
+
+The model contains 6,520,344 parameters.
+
+Input
+3,706 × 6,040 movie-user ratings
+              │
+              ▼
+       Dense(512, ReLU)
+          L2 + Dropout
+              │
+              ▼
+       Dense(256, ReLU)
+          L2 + Dropout
+              │
+              ▼
+       Dense(128, Linear)
+          ★ LATENT SPACE ★
+              │
+              ▼
+       Dense(256, ReLU)
+          L2 + Dropout
+              │
+              ▼
+       Dense(512, ReLU)
+            L2
+              │
+              ▼
+       Dense(6,040, Sigmoid)
+              │
+              ▼
+      Reconstructed ratings
+
+Why a linear bottleneck?
+
+The 128-dimensional latent layer uses a linear activation rather than ReLU.
+
+This avoids forcing every embedding coordinate to be non-negative and preserves a more flexible representation for cosine similarity.
+
+Why dropout?
+
+Dropout is applied to hidden layers rather than directly to the input.
+
+The input is already approximately 95% empty, so randomly removing additional ratings would introduce unnecessary noise.
+
+Why sigmoid at the output?
+
+The ratings are scaled into [0, 1], so sigmoid naturally constrains reconstructed values to the same range.
+
+⚙️ Training
+
+The model uses:
+
+Optimizer: Adam
+Initial learning rate: 1e-3
+Learning-rate reduction: halved on plateau
+Batch size: 64
+L2 regularisation: 1e-5
+Dropout: 0.2
+Early stopping: patience 10
+Best-weight restoration: enabled
+Random seed: 42
+
+Training ran for 30 epochs, with the best validation result at epoch 20.
+
+Best validation masked RMSE:
+
+0.8695 stars
+
+
+Training took approximately 3 minutes on a single CPU core.
+
+A GPU is therefore useful for convenience, but not required.
+
+🧬 Movie Embeddings
+
+Once training is complete, only the encoder portion is needed:
+
+6,040 ratings
+      ↓
+Dense 512
+      ↓
+Dense 256
+      ↓
+Dense 128
+      ↓
+movie embedding
+
+
+The encoder produces:
+
+(3706, 128)
+
+
+Each row corresponds to one movie.
+
+The notebook verifies that:
+
+every rated movie has exactly one embedding
+MovieID ↔ embedding index mapping is invertible
+embeddings contain no NaN or infinite values
+no embedding is an all-zero vector
+encoding a movie individually reproduces its batch embedding
+
+The saved embedding matrix is:
+
+models/movie_embeddings.npy
+
+🎬 Recommendation Algorithm
+
+For a query such as:
+
+rec.recommend_movies(
+    "Godfather, The (1972)",
+    top_n=10
+)
+
+
+CineLatent performs the following steps:
+
+Movie title
+    │
+    ▼
+Resolve title
+    │
+    ▼
+Find movie embedding
+    │
+    ▼
+Calculate cosine similarity
+against all movie embeddings
+    │
+    ▼
+Remove the query movie
+    │
+    ▼
+Apply minimum rating support
+    │
+    ▼
+Return Top-N
+
+
+Title resolution supports:
+
+exact matches
+prefix matches
+substring matches
+close-match suggestions
+ambiguous titles
+invalid top_n
+candidate pools smaller than requested top_n
+
+The recommender can also blend several favourite movies:
+
+rec.recommend_from_profile([
+    "Alien (1979)",
+    "Blade Runner (1982)"
+])
+
+
+The multi-movie profile uses the Top-50 neighbourhood scoring strategy used during ranking evaluation.
+
+🍿 Example Recommendations
+The Godfather
+Because you watched The Godfather (1972)
+
+1. The Godfather: Part II (1974)       0.991
+2. Close Encounters of the Third Kind  0.941
+3. Apocalypse Now (1979)               0.932
+4. Unforgiven (1992)                    0.931
+5. Dog Day Afternoon (1975)             0.914
+
+Toy Story
+Because you watched Toy Story (1995)
+
+1. Toy Story 2 (1999)                   0.981
+2. Aladdin (1992)                       0.958
+3. A Bug's Life (1998)                  0.944
+4. The Lion King (1994)                 0.907
+
+
+The similarity score is cosine similarity in the learned latent space, not a rating prediction.
+
+📈 Evaluation
+
+CineLatent evaluates rating prediction and recommendation ranking independently.
+
+Rating Prediction
+
+Test set:
+
+97,383 held-out ratings
+
+Model	RMSE	MAE
+Deep Autoencoder	0.8604	0.6720
+Movie + User Bias	0.9321	0.7314
+Movie Mean	0.9800	0.7830
+User Mean	1.0334	0.8268
+Global Mean	1.1168	0.9332
+
+The autoencoder reduces RMSE by 7.7% compared with the strongest baseline.
+
+Top-10 Recommendation Ranking
+
+Evaluation uses 5,862 users who had at least one relevant test movie.
+
+A relevant movie is defined as a held-out rating of:
+
+4 or 5 stars
+
+
+Movies already present in the user's training set are excluded.
+
+Scorer	Precision@10	Recall@10	Hit-Rate@10	NDCG@10
+Embedding + Top-50 neighbours	0.0927	0.1137	0.5179	0.1271
+Popularity	0.0733	0.0861	0.4369	0.0986
 Autoencoder reconstruction	0.0596	0.0669	0.3623	0.0813
-Embedding item-item, all neighbours	0.0528	0.0728	0.3748	0.0735
+Embedding + all neighbours	0.0528	0.0728	0.3748	0.0735
 
-Two findings worth stating plainly:
+The strongest result is:
 
-The autoencoder's raw reconstruction ranks worse than popularity despite winning clearly on RMSE. Predicting the rating of films a user already chose to watch is a different task from choosing which film to surface. This result is reported rather than hidden.
-Neighbourhood truncation is what makes the embedding scorer win. Letting every film vote for every other drowns the signal in thousands of weak similarities (Precision@10 0.0528); restricting each film to its 50 closest peers lifts it to 0.0927, ahead of popularity on all four metrics.
+Top-50 neighbourhood embedding recommendations outperform popularity on all four ranking metrics.
 
-Precision ceilings are low by construction: a user has only a handful of test ratings, so most of the ten slots cannot be hits even for a perfect model. Hit-Rate@10 is the most intuitive figure — 51.8% of users got at least one film they later rated 4+, against 43.7% for popularity.
+🔍 An Important Finding
 
-(c) Do the embeddings mean anything?
+One of the most interesting results is that the autoencoder's rating reconstruction performs worse as a recommendation ranker than popularity:
 
-Genre labels were never shown to the model, so they make an independent audit. Mean Jaccard genre overlap with the ten nearest films: 0.4179, against 0.1749 for ten random films — a 2.4× separation. The PCA projection in section 13 shows the same thing visually.
+Autoencoder reconstruction
+Precision@10 = 0.0596
 
-No plain "accuracy" is reported anywhere: for a 1–5 star prediction there is no meaningful correct/incorrect binary outcome.
+Popularity
+Precision@10 = 0.0733
 
-TMDB API integration
 
-TMDB is an external REST API — nothing to upload, nothing to scrape, and it plays no part in training. src/tmdb_api.py provides search_movie(), get_movie_details(), get_poster_url() and enrich_movie(), and handles:
+This is not contradictory.
 
-both credential styles — a v3 API key goes in the query string, a v4 read token in an Authorization: Bearer header; the style is auto-detected
-MovieLens title quirks — "American President, The (1995)" → The American President (1995); "Postino, Il (The Postman) (1994)" → Il Postino with The Postman as a fallback query; "Professional, The (a.k.a. Leon: The Professional) (1994)" handled too. Searched as written, these fail
-failure modes — timeouts, retries with backoff, 401/403 (auth), 404, 429 (rate limit), 5xx, malformed JSON
-caching — in-memory and on-disk, so a film is never requested twice
-graceful degradation — a film TMDB cannot find returns a record with the MovieLens title intact and tmdb_found = False, never an exception mid-page
+The two tasks are different.
 
-The credential is never printed, never logged, and is masked in __repr__.
+Rating prediction asks:
 
-Verification note. The TMDB client is covered by 12 offline test groups using a stubbed HTTP transport (see Tests below). Live calls against api.themoviedb.org were not exercised in the environment where this was built — outbound access to that host was unavailable. Add your key and run section 18 of the notebook to confirm against the real API.
+"What rating would this user give this movie?"
 
-Streamlit application
-bash
+Recommendation ranking asks:
+
+"Which movies should I put in the user's Top-10?"
+
+A model can be good at reconstructing ratings while still being mediocre at selecting the ten most useful candidates.
+
+CineLatent therefore does not hide this result.
+
+🧩 Why Top-50 Neighbours Matter
+
+Another important finding is the effect of neighbourhood size.
+
+Using every movie as a possible neighbour produces:
+
+Precision@10 = 0.0528
+
+
+Restricting each movie to its 50 closest neighbours produces:
+
+Precision@10 = 0.0927
+
+
+The likely explanation is that thousands of weak similarities introduce noise.
+
+The Top-50 neighbourhood preserves the strongest collaborative relationships while filtering out weak connections.
+
+🎨 Do the Embeddings Actually Capture Movie Similarity?
+
+Genres are never provided to the model.
+
+That makes them useful as an independent sanity check.
+
+For each movie, the genres of its ten nearest neighbours are compared with the query movie's genres using Jaccard similarity.
+
+Results:
+
+Learned neighbours: 0.4179
+Random movies:      0.1749
+
+
+That is approximately a 2.4× separation.
+
+This does not mean the model is learning genres directly.
+
+Instead, it suggests that rating behaviour contains enough structure for genre-related movies to emerge naturally in the latent space.
+
+The project also includes a PCA visualization of the learned embeddings.
+
+🌐 TMDB Integration
+
+The machine-learning model does not depend on TMDB.
+
+TMDB is used only after recommendation generation to enrich results with:
+
+posters
+movie overviews
+release information
+TMDB ratings
+additional metadata
+
+The integration is implemented in:
+
+src/tmdb_api.py
+
+
+The client supports:
+
+TMDB v3 API keys
+TMDB v4 bearer tokens
+request timeouts
+retries with backoff
+rate-limit handling
+authentication errors
+404 responses
+5xx errors
+malformed JSON
+in-memory caching
+disk caching
+graceful failure when a movie cannot be found
+
+MovieLens title quirks are also handled.
+
+For example:
+
+American President, The (1995)
+
+
+can be resolved to:
+
+The American President
+
+
+without modifying the original MovieLens catalogue title.
+
+Important verification note
+
+The TMDB client has offline tests using a stubbed HTTP transport.
+
+Live requests to api.themoviedb.org were not executed in the original build environment because outbound access to that host was unavailable.
+
+🖥️ Streamlit Application
+
+The trained model is exposed through a Streamlit interface.
+
+Run:
+
 streamlit run app.py
 
-Two tabs — Similar to one movie and Blend a few favourites — over a searchable catalogue of all 3,706 films. Each result is a card with poster, title, genres, release year, TMDB rating, an expandable overview, and the cosine similarity rendered as a ticket-stub meter. Sidebar controls set the number of recommendations and the minimum-ratings threshold.
 
-app.py is a single self-contained file: it imports only third-party packages, never src/, so it deploys anywhere the two artifact files reach. It loads movie_embeddings.npy and movie_id_mapping.pkl and never trains. Without a TMDB key it still works: posters fall back to a placeholder and MovieLens genres are shown instead. Missing artifacts produce a clear instruction to run the notebook, not a stack trace.
+The application contains two modes:
 
-Google Colab / Jupyter setup
+Similar to one movie
 
-The same notebook runs in both — it detects Colab and adapts.
+Choose a movie and receive similar films.
 
-Open movie_recommender.ipynb in Colab (File → Upload notebook).
-Run section 01. It creates data/, models/, outputs/, src/.
-Get the dataset. Section 03 prints the exact commands if the files are absent:
-python
-   !wget -q https://files.grouplens.org/datasets/movielens/ml-1m.zip
-   !unzip -q -o ml-1m.zip && mkdir -p data && mv ml-1m/*.dat data/
+Blend a few favourites
 
-or upload ratings.dat, movies.dat, users.dat with files.upload(). 4. Run every cell top to bottom. On a free CPU runtime the whole notebook takes roughly 5 minutes, training included; a GPU runtime is faster but unnecessary. 5. Optional: set USE_GOOGLE_DRIVE = True in section 01 to keep artifacts on Drive across runtime restarts. 6. Optional: section 20 zips models/ and downloads it to your machine.
+Choose multiple movies and generate recommendations based on their combined latent neighbourhood.
 
-Only genuinely missing packages are installed — on Colab the install cell usually prints "nothing to install". The notebook uses relative paths throughout and contains no machine-specific paths, no Docker, and no database.
+Each recommendation can display:
 
-Local setup
-bash
-git clone <your-repo-url> && cd cinelatent
-python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
-pip install -r requirements-dev.txt                   # notebook + app
-# pip install -r requirements.txt                     # app only (no TensorFlow)
+poster
+title
+genres
+release year
+TMDB rating
+overview
+cosine similarity
+rating count
 
-# dataset
+The app does not train the model.
+
+It simply loads the saved embeddings and catalogue.
+
+This keeps deployment lightweight and avoids requiring TensorFlow at runtime.
+
+📁 Project Structure
+cinelatent/
+│
+├── movie_recommender.ipynb
+├── app.py
+├── app_embedded.py
+│
+├── src/
+│   ├── recommender.py
+│   └── tmdb_api.py
+│
+├── tests/
+│   ├── test_modules.py
+│   ├── test_app_smoke.py
+│   ├── test_app_parity.py
+│   ├── test_posters.py
+│   └── test_no_secrets.py
+│
+├── models/
+│   ├── autoencoder.keras
+│   ├── encoder.keras
+│   ├── movie_embeddings.npy
+│   ├── movie_id_mapping.pkl
+│   └── training_history.json
+│
+├── outputs/
+│   ├── eda/
+│   ├── evaluation/
+│   └── recommendations/
+│
+├── requirements.txt
+├── requirements-dev.txt
+├── .env.example
+├── .gitignore
+└── .streamlit/
+    └── config.toml
+
+🧪 Testing
+
+The project includes offline tests covering both the recommender and application.
+
+python tests/test_modules.py
+python tests/test_app_smoke.py
+python tests/test_app_parity.py
+python tests/test_posters.py
+python tests/test_no_secrets.py
+
+
+The tests verify:
+
+recommendation behaviour
+title resolution
+edge cases
+TMDB client behaviour
+poster rendering
+Streamlit rendering
+parity between app.py and src/
+API credential redaction
+absence of accidentally committed secrets
+
+The notebook also performs assertions throughout the ML pipeline rather than relying only on visual inspection.
+
+🚀 Running Locally
+1. Clone the repository
+git clone <your-repo-url>
+cd cinelatent
+
+2. Create an environment
+python -m venv .venv
+
+# macOS / Linux
+source .venv/bin/activate
+
+# Windows
+.venv\Scripts\activate
+
+3. Install dependencies
+
+For the complete ML workflow:
+
+pip install -r requirements-dev.txt
+
+
+For the application only:
+
+pip install -r requirements.txt
+
+
+The runtime requirements intentionally exclude TensorFlow.
+
+📥 Download MovieLens 1M
 curl -O https://files.grouplens.org/datasets/movielens/ml-1m.zip
-unzip ml-1m.zip && mkdir -p data && mv ml-1m/*.dat data/
+unzip ml-1m.zip
+
+mkdir -p data
+mv ml-1m/*.dat data/
+
+
+Then open:
 
 jupyter lab movie_recommender.ipynb
 
-The notebook must live at the project root (it steps up one directory automatically if you move it into a subfolder).
 
-API configuration
+Run the notebook from beginning to end.
 
-Get a free key at https://www.themoviedb.org/settings/api. Either credential style works.
+The notebook creates:
 
-bash
+data/
+models/
+outputs/
+src/
+app.py
+
+🔑 TMDB API Configuration
+
+Create a .env file:
+
 cp .env.example .env
-# then edit .env:
+
+
+Then add your TMDB credential:
+
 TMDB_API_KEY=your_tmdb_api_token
 
-Resolution order is environment variable → .env → interactive getpass prompt (which does not echo). For Streamlit Cloud, copy .streamlit/secrets.toml.example to .streamlit/secrets.toml instead.
 
-Keeping the key out of a public repository
+The application resolves credentials in this order:
 
-The credential is never written in code — it is read at runtime from Streamlit secrets, the environment, or a git-ignored .env. On Streamlit Cloud the secret lives in the platform, not the repository, so a public repo is fine.
+Environment variable
+        ↓
+.env
+        ↓
+Interactive getpass prompt
 
-Four defences, each verified by tests/test_no_secrets.py:
 
-.env and .streamlit/secrets.toml are git-ignored (only the .example files, holding placeholders, are committed).
-The notebook reads the key with getpass and never echoes it; the test scans every cell source and text output.
-TMDBClient.__repr__ masks the credential.
-Error messages are redacted. A v3 key travels in the URL query string, so a proxy or gateway error page can echo the whole URL back — _redact() strips the key before the message reaches the UI or the logs. The test simulates exactly that echo and asserts the key does not survive.
+The credential is never hard-coded into the application.
 
-The scanner is checked against a planted dummy key, so it fails loudly rather than passing vacuously.
+For Streamlit Cloud, use Streamlit's Secrets configuration rather than committing a secret file.
 
-If you have ever committed a real key, .gitignore does not untrack it and it stays in the history. Revoke it at themoviedb.org and issue a new one — that is faster and safer than rewriting history.
+Never commit a real API key to Git. If one has already been committed, revoke it and create a new one.
 
-The recommender itself does not need TMDB. Only posters and overviews do.
+☁️ Deploying to Streamlit Cloud
 
-How to run
-bash
-# 1. train and evaluate (writes models/, outputs/, src/, app.py)
-jupyter lab movie_recommender.ipynb        # or open it in Colab
+The application can be deployed using:
 
-# 2. serve
-streamlit run app.py
+Main file:
+app.py
 
-# 3. tests
-python tests/test_modules.py               # 18 groups, no network needed
-python tests/test_app_smoke.py             # headless Streamlit render check
-python tests/test_app_parity.py            # app.py vs src/ must agree exactly
-python tests/test_posters.py               # poster rendering + TMDB status reporting
-python tests/test_no_secrets.py            # run before every push to a public repo
-Project structure
-movie_recommender.ipynb     the complete ML workflow (Jupyter + Colab)
-app.py                      Streamlit interface — no local imports (45 KB)
-app_embedded.py             same app with artifacts baked in — deploy alone
-src/
-    recommender.py          MovieRecommender: title resolution, cosine Top-N
-    tmdb_api.py             TMDBClient: search, details, posters, caching
-tests/
-    test_modules.py         offline tests for both modules
-    test_app_smoke.py       headless app render test
-    test_app_parity.py      app.py's embedded copy == src/recommender.py
-    test_posters.py         poster rendering and TMDB credential reporting
-    test_no_secrets.py      scans for committed credentials; checks redaction
+
+The runtime requirements are intentionally small:
+
+streamlit
+numpy
+pandas
+requests
+python-dotenv
+
+
+TensorFlow is not required because the deployed application uses the precomputed embeddings.
+
+For a lightweight deployment, the important files are:
+
+app.py
+requirements.txt
+
 models/
-    autoencoder.keras       full trained model  (regenerated by the notebook)
-    encoder.keras           input → latent half; regenerates the embeddings
-    movie_embeddings.npy    (3706, 128) float32
-    movie_id_mapping.pkl    catalogue + MovieID↔index dicts + run metadata
-    training_history.json   per-epoch loss and RMSE
-outputs/
-    eda/                    9 figures (11 panels)
-    evaluation/             metrics CSVs, summary.json, comparison charts
-    recommendations/        example Top-10 tables, incl. one with TMDB columns
-requirements.txt            app runtime only — the file Streamlit Cloud installs
-requirements-dev.txt        the above plus TensorFlow, sklearn, matplotlib, Jupyter
-.env.example  ·  .gitignore  ·  .streamlit/config.toml
+├── movie_embeddings.npy
+└── movie_id_mapping.pkl
 
-Re-running the notebook after training reloads the saved model instead of retraining (FORCE_RETRAIN = False), so a full re-run takes seconds.
 
-Deploying to Streamlit Cloud
+The full 75 MB autoencoder does not need to be deployed.
 
-The app runs on share.streamlit.io with no code changes, but three things have to be true in the repository.
+There is also an optional:
 
-1. app.py needs no other source files. It carries its own copy of the recommender and TMDB client, so ModuleNotFoundError: No module named 'src' — the classic Streamlit Cloud failure when a subfolder does not reach the host, or when a folder is Src on Windows and src on Linux — cannot happen. The trade-off is a duplicated ~250 lines, which tests/test_app_parity.py guards by asserting that app.py and src/recommender.py return identical recommendations, similarity scores and exceptions.
+app_embedded.py
 
-2. The artifacts travel inside app.py, so there is nothing else to commit. If you would rather ship them as separate files, models/movie_embeddings.npy (1.9 MB) and models/movie_id_mapping.pkl (332 KB) are un-ignored in .gitignore and take priority over the embedded copy:
 
-bash
-git check-ignore -v models/movie_embeddings.npy   # should print nothing
+which contains the catalogue and embeddings inside the application itself, allowing the app to run as a single file.
 
-The 75 MB autoencoder.keras stays out either way — the app never opens it.
+⚠️ Limitations
+Cold Start
 
-3. Keep requirements.txt at the repository root and slim. Streamlit Cloud installs that file and nothing else. If it is missing, only Streamlit's own dependencies get installed and every import in app.py fails; if it contains TensorFlow, the build is slow and can exhaust the free tier's memory.
+A movie with no ratings cannot receive a collaborative embedding.
 
-Then, in the Streamlit Cloud UI:
+Likewise, a completely new user has no rating profile.
 
-Main file path → app.py
-Settings → Secrets → paste TMDB_API_KEY = "your_token" (this is where the key belongs on Cloud; never commit secrets.toml)
+A content-based or hybrid model would be required to solve this.
 
-Without the secret the app still deploys and works — posters fall back to a placeholder and MovieLens genres are shown.
+Dataset Age
 
-Deployment checklist
-repo-root/
-├── app.py                        ← "Main file path" in the Streamlit UI  (45 KB)
-├── requirements.txt              ← slim; Cloud installs this
-└── models/
-    ├── movie_embeddings.npy      (1.9 MB)
-    └── movie_id_mapping.pkl      (332 KB)
+MovieLens 1M ends in 2003.
 
-app.py imports nothing from src/, so a missing subfolder cannot break it.
+The learned relationships therefore reflect an old movie catalogue and historical viewing behaviour.
 
-If you would rather deploy a single file, app_embedded.py is the same code with the embeddings and catalogue baked in as compressed base64 (2.4 MB): rename it to app.py and neither models/ nor anything else is needed. Regenerate it after retraining with python app.py --embed. Files in models/ still take priority when they exist, so retraining keeps working; run python app.py --embed afterwards to refresh the copy inside the file. The payload is float32 by measurement, not habit: float16 halves it but reorders 17% of top-10 lists, and int8 reorders 80%.
+Temporal Effects
 
-If models/ is absent the app does not crash: it shows the paths it looked in, lists what it can actually see on disk, and gives the git commands to fix it.
+The data is not evaluated using a strict temporal split.
 
-Results
-Rating prediction: test RMSE 0.8604 / MAE 0.6720, 7.7% below the best of four baselines (0.9321). For context, published I-AutoRec results on MovieLens 1M sit near 0.83 RMSE under a different split protocol, so this is in the expected range for the architecture.
-Top-10 ranking: Precision@10 0.0927, Recall@10 0.1137, Hit-Rate@10 0.5179, NDCG@10 0.1271 — ahead of the popularity baseline on all four.
-Embedding quality: genre overlap with learned neighbours 0.4179 vs 0.1749 random, with genres never shown to the model.
-Cost: 30 epochs in about 3 minutes on one CPU core; the app loads in about a second.
+As a result, the model can learn correlations caused by movies being popular during the same period rather than purely by user taste.
 
-All figures come from a single run with SEED = 42; the notebook reproduces them.
+Popularity Bias
 
-Limitations
-Cold start. A film with no ratings gets no embedding and a new user has no profile. This architecture cannot fix either.
-Temporal cohorts. Nearly half of MovieLens 1M was rated within a few months of 2000, so the model partly learns "watched in the same period" rather than "liked by the same taste". It is visible in the output — Close Encounters of the Third Kind ranks second for The Godfather, which is a co-rating artefact rather than a content judgement.
-Popularity bias. Ratings concentrate on blockbusters and the recommender inherits that. min_support guards against the opposite failure (noise from barely-rated films) but does not remove the bias.
-Offline metrics only. Precision@10 measures agreement with what users happened to rate later, not what they would have enjoyed had it been shown. Only an online A/B test measures that.
-One seed. Differences between scorers here are large enough to be meaningful; small differences would need repeated runs to be trusted.
-Dataset age. MovieLens 1M stops in 2003. Nothing after that exists to the model.
-TMDB live calls unverified in this build — see the note in the TMDB section.
-Future improvements
-Hybrid content signal. Embed TMDB overviews with a sentence transformer and concatenate with the latent vectors — the direct fix for cold start.
-Ranking-native loss. Train with BPR or a sampled softmax instead of masked MSE, so the model optimises the objective it is actually judged on.
-Denoising / variational variants. Mask-and-reconstruct training (CDAE) or Mult-VAE, both of which are the natural next architectures.
-Time-aware split and features. Evaluate against a temporal cut and add rating recency, which would address the cohort artefact directly.
-Approximate nearest neighbours (FAISS, Annoy) if the catalogue grows past a few hundred thousand titles; exact cosine over 3,706 films is instant.
-Repeated seeds and confidence intervals on every reported metric.
-Online evaluation — the only measurement that settles whether any of this works in production.
-Acknowledgements
+Popular movies receive much more collaborative signal and can dominate the learned space.
 
-MovieLens 1M is provided by GroupLens Research at the University of Minnesota. This product uses the TMDB API but is not endorsed or certified by TMDB.
+min_support reduces noise from extremely rare movies but does not eliminate popularity bias.
 
-The architecture follows Sedhain et al., AutoRec: Autoencoders Meet Collaborative Filtering (WWW 2015), extended to a deeper encoder/decoder.
+Offline Evaluation
+
+A high Precision@10 does not prove that users would actually enjoy the recommendations in production.
+
+The only definitive production measurement would be an online experiment such as an A/B test.
+
+One Random Seed
+
+The reported results come from:
+
+SEED = 42
+
+
+Repeated runs would be required to calculate confidence intervals and establish how stable smaller metric differences are.
+
+TMDB Live Verification
+
+The TMDB integration was tested offline, but live API calls were unavailable in the original build environment.
+
+🔮 Future Improvements
+
+Several extensions naturally follow from the current system.
+
+Hybrid Recommendations
+
+Combine collaborative embeddings with semantic embeddings generated from TMDB overviews.
+
+This would provide a solution for cold-start movies.
+
+Ranking-Native Training
+
+Instead of optimising masked MSE, train directly for ranking using approaches such as:
+
+BPR
+sampled softmax
+pairwise ranking losses
+
+This would align the training objective more closely with Top-N evaluation.
+
+Denoising Autoencoder
+
+A denoising architecture such as CDAE could intentionally corrupt observed ratings and learn to reconstruct them.
+
+Variational Models
+
+Mult-VAE is another natural next step for implicit or sparse recommendation settings.
+
+Temporal Modelling
+
+Introduce:
+
+rating timestamps
+recency
+temporal splits
+time-dependent user/movie preferences
+
+This could reduce historical cohort effects.
+
+Approximate Nearest Neighbours
+
+The current catalogue contains only 3,706 rated movies, so exact cosine similarity is effectively instantaneous.
+
+For a catalogue containing hundreds of thousands or millions of movies, an ANN library such as FAISS or Annoy would become more appropriate.
+
+Repeated Experiments
+
+Run multiple random seeds and report:
+
+mean metrics
+standard deviation
+confidence intervals
+Online Evaluation
+
+Ultimately, deploy multiple ranking strategies and measure actual user behaviour.
+
+Offline metrics can estimate usefulness, but an online experiment is the final test.
+
+📌 Reproducibility
+
+All headline numbers in this README were produced by the notebook.
+
+The experiment uses:
+
+SEED = 42
+
+
+The notebook records:
+
+training history
+evaluation metrics
+recommendation examples
+generated embeddings
+dataset validation statistics
+model artifacts
+
+Re-running the notebook with:
+
+FORCE_RETRAIN = False
+
+
+loads the existing trained model rather than retraining it.
+
+📚 References
+MovieLens 1M
+
+GroupLens Research, University of Minnesota.
+
+AutoRec
+
+Sedhain et al., "AutoRec: Autoencoders Meet Collaborative Filtering", WWW 2015.
+
+CineLatent follows the AutoRec idea and extends the architecture with a deeper encoder/decoder and a 128-dimensional latent representation.
+
+🙏 Acknowledgements
+
+MovieLens 1M is provided by GroupLens Research at the University of Minnesota.
+
+This project uses the TMDB API for optional movie metadata and posters. It is not endorsed or certified by TMDB.
+
+⭐ Summary
+
+CineLatent demonstrates an end-to-end recommendation pipeline:
+
+MovieLens 1M
+     │
+     ▼
+Data validation
+     │
+     ▼
+Movie × User sparse matrix
+     │
+     ▼
+80 / 10 / 10 per-user split
+     │
+     ▼
+Masked-loss deep autoencoder
+     │
+     ▼
+128-dimensional movie embeddings
+     │
+     ▼
+Cosine similarity
+     │
+     ▼
+Top-50 neighbourhood filtering
+     │
+     ▼
+Top-N recommendations
+     │
+     ├──────────────► TMDB metadata
+     │
+     ▼
+Streamlit application
+
+
+The central result is simple:
+
+A deep autoencoder can learn useful movie-to-movie relationships directly from rating behaviour, and those learned relationships can outperform popularity-based recommendations when the latent neighbourhood is used as a ranking signal.
+
+The project deliberately reports both its successes and its failures: strong rating prediction does not guarantee strong ranking, popularity remains competitive, and offline evaluation cannot substitute for a real production experiment.
+
+This version keeps the technical credibility of your original README, but makes the narrative much easier to follow: problem → intuition → data → model → embeddings → recommendations → evaluation → deployment → limitations. It should also read much more naturally to someone reviewing the project on GitHub rather than someone auditing the notebook.
