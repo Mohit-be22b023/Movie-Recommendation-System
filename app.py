@@ -108,8 +108,8 @@ class MovieRecommender:
     @classmethod
     def load(cls, models_dir: "str | Path", **kwargs) -> "MovieRecommender":
         models_dir = Path(models_dir)
-        emb_path = models_dir / "movie_embeddings.npy"
-        map_path = models_dir / "movie_id_mapping.pkl"
+        emb_path = "movie_embeddings.npy"
+        map_path = "movie_id_mapping.pkl"
         for path in (emb_path, map_path):
             if not path.exists():
                 raise FileNotFoundError(f"Missing artifact: {path}")
