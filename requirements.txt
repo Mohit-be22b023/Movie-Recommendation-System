@@ -1,0 +1,13 @@
+# ── Runtime dependencies for the Streamlit app (app.py) ────────────────────
+# This is the file Streamlit Community Cloud installs, so it is deliberately
+# small: the app only loads saved embeddings and mappings, and never imports
+# TensorFlow, scikit-learn, scipy, matplotlib or seaborn.
+#
+# To run the notebook (training + evaluation) install requirements-dev.txt,
+# which includes this file plus the full ML stack.
+
+streamlit>=1.32
+numpy>=1.26
+pandas>=2.2
+requests>=2.31
+python-dotenv>=1.0
