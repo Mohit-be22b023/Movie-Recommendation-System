@@ -1,9 +1,5 @@
 # Movie-Recommendation-System
 
-Absolutely — what you have is already very detailed, but it reads more like a technical project report than a GitHub README. For GitHub, I’d make it more reader-friendly and explanatory: first explain what CineLatent does and why, then progressively show the architecture, methodology, results, and how to run it.
-
-Here’s a polished README structure that keeps your technical depth but makes the project easier to understand:
-
 🎞️ CineLatent — Deep Autoencoder Movie Recommender
 
 A deep-learning collaborative filtering system that learns what movies are similar from user rating behaviour.
